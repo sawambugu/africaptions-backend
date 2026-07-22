@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Africaptions Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Africaptions</div>
+    <div id="userbox" class="userbox hidden">
+      <span id="userEmail"></span>
+      <span id="tierBadge" class="badge"></span>
+      <button id="logoutBtn" class="btn btn-ghost">Log out</button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- Auth -->
+    <section id="authView" class="card">
+      <div class="tabs">
+        <button class="tab active" data-tab="login">Log in</button>
+        <button class="tab" data-tab="register">Create account</button>
+      </div>
+
+      <form id="loginForm" class="form">
+        <label>Email <input type="email" name="email" required /></label>
+        <label>Password <input type="password" name="password" required /></label>
+        <button class="btn btn-primary" type="submit">Log in</button>
+        <p class="error" id="loginError"></p>
+      </form>
+
+      <form id="registerForm" class="form hidden">
+        <label>Studio / company name <input type="text" name="clientName" required /></label>
+        <label>Email <input type="email" name="email" required /></label>
+        <label>Password (min 8 characters) <input type="password" name="password" required minlength="8" /></label>
+        <button class="btn btn-primary" type="submit">Create account</button>
+        <p class="error" id="registerError"></p>
+      </form>
+    </section>
+
+    <!-- Main dashboard -->
+    <section id="appView" class="hidden">
+
+      <nav class="tabs" id="mainTabs">
+        <button class="tab active" data-view="projects">Projects</button>
+        <button class="tab" data-view="upgrade" id="upgradeTabBtn">Upgrade</button>
+        <button class="tab hidden" data-view="clients" id="clientsTabBtn">Clients (admin)</button>
+      </nav>
+
+      <!-- Upgrade / billing -->
+      <section id="upgradeView" class="card hidden-view">
+        <h2>Unlock the Advanced (Tier 2) CMS</h2>
+        <p>Pay to unlock self-service project, media and caption management for
+          <strong id="planDaysLabel">30</strong> days.</p>
+
+        <div class="upgrade-options">
+          <div class="upgrade-option">
+            <h3>Pay with Paystack</h3>
+            <p>Card or mobile money checkout.</p>
+            <button id="paystackBtn" class="btn btn-primary">Pay with Paystack</button>
+          </div>
+          <div class="upgrade-option">
+            <h3>Pay with M-Pesa</h3>
+            <p>Enter your Safaricom number to receive an STK push prompt.</p>
+            <form id="mpesaForm" class="form">
+              <input type="tel" name="phoneNumber" placeholder="07XXXXXXXX" required />
+              <button class="btn btn-primary" type="submit">Send STK push</button>
+            </form>
+            <p id="mpesaStatus" class="status"></p>
+          </div>
+        </div>
+        <p class="error" id="upgradeError"></p>
+      </section>
+
+      <!-- Projects list -->
+      <section id="projectsView" class="card">
+        <h2>Projects</h2>
+        <form id="newProjectForm" class="form inline">
+          <input type="text" name="title" placeholder="Project title" required />
+          <button class="btn btn-primary" type="submit">New project</button>
+        </form>
+        <p class="error" id="projectsError"></p>
+        <ul id="projectsList" class="list"></ul>
+      </section>
+
+      <!-- Project detail -->
+      <section id="projectDetailView" class="card hidden-view">
+        <button id="backToProjects" class="btn btn-ghost">&larr; Back to projects</button>
+        <h2 id="projectTitle"></h2>
+        <label>Status
+          <select id="projectStatus">
+            <option value="DRAFT">DRAFT</option>
+            <option value="IN_PROGRESS">IN_PROGRESS</option>
+            <option value="REVIEW">REVIEW</option>
+            <option value="DELIVERED">DELIVERED</option>
+            <option value="ARCHIVED">ARCHIVED</option>
+          </select>
+        </label>
+
+        <h3>Media</h3>
+        <form id="uploadMediaForm" class="form inline">
+          <input type="file" name="file" required />
+          <button class="btn btn-secondary" type="submit">Upload</button>
+        </form>
+        <ul id="mediaList" class="list"></ul>
+
+        <h3>Caption tracks</h3>
+        <form id="newCaptionForm" class="form">
+          <div class="inline">
+            <input type="text" name="language" placeholder="Language (e.g. en, sw)" required />
+            <select name="format">
+              <option value="SRT">SRT</option>
+              <option value="VTT">VTT</option>
+              <option value="SCC">SCC</option>
+              <option value="TXT">TXT</option>
+            </select>
+          </div>
+          <textarea name="content" placeholder="Paste caption content here" required rows="6"></textarea>
+          <button class="btn btn-secondary" type="submit">Add caption track</button>
+        </form>
+        <ul id="captionsList" class="list"></ul>
+      </section>
+
+      <!-- Admin: clients -->
+      <section id="clientsView" class="card hidden-view">
+        <h2>Clients</h2>
+        <table class="table" id="clientsTable">
+          <thead>
+            <tr><th>Name</th><th>Users</th><th>Tier</th><th>Expires</th><th>Grant</th></tr>
+          </thead>
+          <tbody id="clientsTableBody"></tbody>
+        </table>
+      </section>
+
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

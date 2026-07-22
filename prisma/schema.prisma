@@ -32,6 +32,17 @@ enum ProjectStatus {
   ARCHIVED
 }
 
+enum PaymentProvider {
+  PAYSTACK
+  MPESA
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 enum CaptionFormat {
   SRT
   VTT
@@ -40,16 +51,20 @@ enum CaptionFormat {
 }
 
 model Client {
-  id                   String   @id @default(cuid())
-  name                 String
-  tier                 Tier     @default(FREE)
-  stripeCustomerId     String?  @unique
-  stripeSubscriptionId String?  @unique
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id        String    @id @default(cuid())
+  name      String
+  tier      Tier      @default(FREE)
+  // When the current paid tier lapses. NULL means "does not expire"
+  // (e.g. an admin manually granted the tier with no end date).
+  // Set automatically on successful payment; checked (and lazily enforced)
+  // by middleware/requireTier.js on every CMS request.
+  tierExpiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-  users    User[]
-  projects Project[]
+  users          User[]
+  projects       Project[]
+  paymentIntents PaymentIntent[]
 }
 
 model User {
@@ -101,6 +116,26 @@ model CaptionTrack {
 
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String
+}
+
+// Tracks a single payment attempt through to completion, for both
+// providers. Necessary because M-Pesa's STK Push callback carries back
+// only the CheckoutRequestID we gave it (no arbitrary metadata), so we
+// need our own record to reconcile "which client, which plan" once the
+// callback/webhook arrives. Also gives an audit trail and makes webhook
+// handling idempotent (a provider retry just finds the same row).
+model PaymentIntent {
+  id        String          @id @default(cuid())
+  provider  PaymentProvider
+  reference String          @unique // Paystack transaction reference, or M-Pesa CheckoutRequestID
+  planDays  Int
+  amount    Int // in the provider's whole currency unit (KES)
+  status    PaymentStatus   @default(PENDING)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  client   Client @relation(fields: [clientId], references: [id])
+  clientId String
 }
 
 // Marketing site content (pages/posts), managed by staff only.

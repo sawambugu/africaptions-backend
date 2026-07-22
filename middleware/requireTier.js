@@ -26,7 +26,19 @@ module.exports = function requireTier(minTier) {
       });
     }
 
-    const client = await prisma.client.findUnique({ where: { id: req.user.clientId } });
+    let client = await prisma.client.findUnique({ where: { id: req.user.clientId } });
+
+    // Lazily enforce plan expiry: a paid tier (set by a successful Paystack
+    // or M-Pesa payment) lapses after tierExpiresAt. There's no recurring
+    // billing on mobile money, so instead of a cron job we just check (and
+    // self-heal) on the next request after expiry.
+    if (client && client.tierExpiresAt && client.tierExpiresAt < new Date() && client.tier !== 'FREE') {
+      client = await prisma.client.update({
+        where: { id: client.id },
+        data: { tier: 'FREE', tierExpiresAt: null },
+      });
+    }
+
     if (!client || TIER_RANK[client.tier] < minRank) {
       return res.status(403).json({
         error: `This feature requires the ${minTier} plan. Upgrade your account to continue.`,

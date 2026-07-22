@@ -1,117 +1,202 @@
-// POST /api/billing/checkout-session — starts a Stripe Checkout flow for the
-//   logged-in client to upgrade to the Advanced (Tier 2) plan.
-// POST /api/billing/webhook — Stripe calls this on subscription lifecycle
-//   events; this is the ONLY place a client's tier is upgraded/downgraded,
-//   so the CMS can never be unlocked by a client just editing their own record.
+// Billing for the Advanced (Tier 2) plan via Paystack (card/mobile money
+// checkout) and M-Pesa (direct STK Push). Neither rail supports true
+// recurring billing on mobile money, so both providers pay for a fixed
+// number of days of access (ADVANCED_PLAN_DAYS) — see PaymentIntent in
+// prisma/schema.prisma and the expiry check in middleware/requireTier.js.
 //
-// NOTE: the webhook route needs the raw request body to verify Stripe's
-// signature, so it must be mounted in server.js with express.raw(),
-// BEFORE the global express.json() middleware runs on it.
+// IMPORTANT: the Paystack webhook is the only place a successful PAYSTACK
+// payment upgrades a client's tier; the M-Pesa callback is the only place
+// a successful MPESA payment does. Nothing else may write client.tier.
 
+const crypto = require('crypto');
 const express = require('express');
-const Stripe = require('stripe');
 const prisma = require('../lib/prisma');
 const authenticate = require('../middleware/authenticate');
+const paystack = require('../lib/paystack');
+const mpesa = require('../lib/mpesa');
 
 const router = express.Router();
 
-function getStripe() {
-  if (!process.env.STRIPE_SECRET_KEY) {
-    throw new Error('STRIPE_SECRET_KEY is not set.');
-  }
-  return new Stripe(process.env.STRIPE_SECRET_KEY);
+const PLAN_DAYS = parseInt(process.env.ADVANCED_PLAN_DAYS || '30', 10);
+const PLAN_PRICE_KES = parseInt(process.env.ADVANCED_PLAN_PRICE_KES || '2000', 10);
+
+function extendExpiry(currentExpiresAt, planDays) {
+  const now = new Date();
+  const base = currentExpiresAt && currentExpiresAt > now ? currentExpiresAt : now;
+  return new Date(base.getTime() + planDays * 24 * 60 * 60 * 1000);
 }
 
-router.post('/checkout-session', authenticate, async (req, res) => {
+async function grantAdvancedTier(paymentIntent) {
+  const client = await prisma.client.findUnique({ where: { id: paymentIntent.clientId } });
+  if (!client) return;
+  await prisma.client.update({
+    where: { id: client.id },
+    data: {
+      tier: 'ADVANCED',
+      tierExpiresAt: extendExpiry(client.tierExpiresAt, paymentIntent.planDays),
+    },
+  });
+}
+
+router.get('/plan', (_req, res) => {
+  res.json({ planDays: PLAN_DAYS, priceKes: PLAN_PRICE_KES });
+});
+
+// --- Paystack -------------------------------------------------------------
+
+router.post('/paystack/initialize', authenticate, async (req, res) => {
   if (!req.user.clientId) {
     return res.status(400).json({ error: 'No client account associated with this user.' });
   }
-  if (!process.env.STRIPE_PRICE_ADVANCED) {
-    return res.status(500).json({ error: 'Billing is not configured (missing STRIPE_PRICE_ADVANCED).' });
-  }
 
-  const stripe = getStripe();
-  const client = await prisma.client.findUnique({ where: { id: req.user.clientId } });
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  const reference = `ap_${crypto.randomBytes(12).toString('hex')}`;
 
-  let stripeCustomerId = client.stripeCustomerId;
-  if (!stripeCustomerId) {
-    const customer = await stripe.customers.create({
-      metadata: { clientId: client.id },
-    });
-    stripeCustomerId = customer.id;
-    await prisma.client.update({
-      where: { id: client.id },
-      data: { stripeCustomerId },
-    });
-  }
-
-  const session = await stripe.checkout.sessions.create({
-    mode: 'subscription',
-    customer: stripeCustomerId,
-    line_items: [{ price: process.env.STRIPE_PRICE_ADVANCED, quantity: 1 }],
-    success_url: `${process.env.APP_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${process.env.APP_URL}/billing/cancelled`,
-    metadata: { clientId: client.id },
+  const intent = await prisma.paymentIntent.create({
+    data: {
+      provider: 'PAYSTACK',
+      reference,
+      planDays: PLAN_DAYS,
+      amount: PLAN_PRICE_KES,
+      clientId: req.user.clientId,
+    },
   });
 
-  res.json({ url: session.url });
+  try {
+    const data = await paystack.initializeTransaction({
+      email: user.email,
+      amountKes: PLAN_PRICE_KES,
+      reference,
+      callbackUrl: `${process.env.APP_URL}/dashboard/billing-callback.html`,
+      metadata: { clientId: req.user.clientId, paymentIntentId: intent.id },
+    });
+    res.json({ authorizationUrl: data.authorization_url, reference });
+  } catch (err) {
+    console.error('Paystack initialize error:', err);
+    res.status(502).json({ error: 'Could not start the Paystack checkout. Please try again.' });
+  }
 });
 
-// Exported separately (not on `router`) because it must be mounted directly
-// on `app` with express.raw() BEFORE the global express.json() middleware —
-// see server.js. Stripe needs the untouched raw body to verify signatures.
-async function webhookHandler(req, res) {
-  const stripe = getStripe();
-  const signature = req.headers['stripe-signature'];
+// Mounted directly on `app` with express.raw() in server.js, before the
+// global express.json() — Paystack's signature covers the exact raw bytes.
+async function paystackWebhookHandler(req, res) {
+  const signature = req.headers['x-paystack-signature'];
+
+  if (!paystack.verifyWebhookSignature(req.body, signature)) {
+    console.error('Paystack webhook signature verification failed.');
+    return res.status(400).json({ error: 'Invalid signature.' });
+  }
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, signature, process.env.STRIPE_WEBHOOK_SECRET);
+    event = JSON.parse(req.body.toString('utf8'));
   } catch (err) {
-    console.error('Stripe webhook signature verification failed:', err.message);
-    return res.status(400).json({ error: `Webhook signature verification failed.` });
+    return res.status(400).json({ error: 'Invalid payload.' });
   }
 
+  // Ack immediately; process after. Paystack retries on non-2xx, so any
+  // error below should still result in a 200 once we've already applied
+  // the update, to avoid duplicate side effects on retry.
+  res.json({ received: true });
+
+  if (event.event !== 'charge.success') return;
+
   try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object;
-        const clientId = session.metadata && session.metadata.clientId;
-        if (clientId) {
-          await prisma.client.update({
-            where: { id: clientId },
-            data: {
-              tier: 'ADVANCED',
-              stripeSubscriptionId: session.subscription,
-            },
-          });
-        }
-        break;
-      }
-      case 'customer.subscription.deleted':
-      case 'customer.subscription.updated': {
-        const subscription = event.data.object;
-        const client = await prisma.client.findUnique({
-          where: { stripeSubscriptionId: subscription.id },
-        });
-        if (client) {
-          const active = subscription.status === 'active' || subscription.status === 'trialing';
-          await prisma.client.update({
-            where: { id: client.id },
-            data: { tier: active ? 'ADVANCED' : 'FREE' },
-          });
-        }
-        break;
-      }
-      default:
-        break;
-    }
-    res.json({ received: true });
+    const reference = event.data && event.data.reference;
+    const intent = await prisma.paymentIntent.findUnique({ where: { reference } });
+    if (!intent || intent.status !== 'PENDING') return; // unknown or already handled
+
+    await prisma.paymentIntent.update({ where: { id: intent.id }, data: { status: 'SUCCESS' } });
+    await grantAdvancedTier(intent);
   } catch (err) {
-    console.error('Error handling Stripe webhook event:', err);
-    res.status(500).json({ error: 'Webhook handler failed.' });
+    console.error('Error handling Paystack webhook event:', err);
   }
 }
 
+// --- M-Pesa -----------------------------------------------------------------
+
+router.post('/mpesa/stk-push', authenticate, async (req, res) => {
+  if (!req.user.clientId) {
+    return res.status(400).json({ error: 'No client account associated with this user.' });
+  }
+  const { phoneNumber } = req.body || {};
+  if (!phoneNumber) {
+    return res.status(400).json({ error: 'phoneNumber is required, e.g. 07XXXXXXXX.' });
+  }
+
+  const callbackUrl = `${process.env.APP_URL}/api/billing/mpesa/callback?key=${encodeURIComponent(
+    process.env.MPESA_CALLBACK_SECRET || ''
+  )}`;
+
+  try {
+    const result = await mpesa.stkPush({
+      phoneNumber,
+      amountKes: PLAN_PRICE_KES,
+      accountReference: req.user.clientId,
+      callbackUrl,
+    });
+
+    await prisma.paymentIntent.create({
+      data: {
+        provider: 'MPESA',
+        reference: result.CheckoutRequestID,
+        planDays: PLAN_DAYS,
+        amount: PLAN_PRICE_KES,
+        clientId: req.user.clientId,
+      },
+    });
+
+    res.json({
+      reference: result.CheckoutRequestID,
+      message: result.CustomerMessage || 'Check your phone to complete the M-Pesa payment.',
+    });
+  } catch (err) {
+    console.error('M-Pesa STK push error:', err);
+    res.status(502).json({ error: 'Could not start the M-Pesa payment. Please try again.' });
+  }
+});
+
+// Safaricom calls this once the customer approves/cancels the STK push.
+// Protected by a shared-secret query param (Daraja has no HMAC signing on
+// callbacks like Stripe/Paystack do).
+router.post('/mpesa/callback', async (req, res) => {
+  if (req.query.key !== process.env.MPESA_CALLBACK_SECRET) {
+    return res.status(401).json({ ResultCode: 1, ResultDesc: 'Unauthorized' });
+  }
+
+  // Always acknowledge Safaricom so it stops retrying, even if our
+  // downstream processing hits an issue.
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+
+  try {
+    const callback = req.body && req.body.Body && req.body.Body.stkCallback;
+    if (!callback) return;
+
+    const intent = await prisma.paymentIntent.findUnique({
+      where: { reference: callback.CheckoutRequestID },
+    });
+    if (!intent || intent.status !== 'PENDING') return;
+
+    if (callback.ResultCode === 0) {
+      await prisma.paymentIntent.update({ where: { id: intent.id }, data: { status: 'SUCCESS' } });
+      await grantAdvancedTier(intent);
+    } else {
+      await prisma.paymentIntent.update({ where: { id: intent.id }, data: { status: 'FAILED' } });
+    }
+  } catch (err) {
+    console.error('Error handling M-Pesa callback:', err);
+  }
+});
+
+// --- Shared: let the frontend poll a payment's status ----------------------
+
+router.get('/status/:reference', authenticate, async (req, res) => {
+  const intent = await prisma.paymentIntent.findUnique({ where: { reference: req.params.reference } });
+  if (!intent || (req.user.role !== 'ADMIN' && intent.clientId !== req.user.clientId)) {
+    return res.status(404).json({ error: 'Payment not found.' });
+  }
+  res.json({ status: intent.status, provider: intent.provider, planDays: intent.planDays });
+});
+
 module.exports = router;
-module.exports.webhookHandler = webhookHandler;
+module.exports.paystackWebhookHandler = paystackWebhookHandler;

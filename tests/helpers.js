@@ -7,6 +7,7 @@ async function resetDatabase() {
   await prisma.mediaAsset.deleteMany();
   await prisma.project.deleteMany();
   await prisma.page.deleteMany();
+  await prisma.paymentIntent.deleteMany();
   await prisma.user.deleteMany();
   await prisma.client.deleteMany();
 }
