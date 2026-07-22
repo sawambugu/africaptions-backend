@@ -1,0 +1,115 @@
+// Africaptions CMS data model.
+// Client = a paying customer account. Tier controls CMS entitlement:
+//   FREE/STANDARD  -> can request work via the contact form only.
+//   ADVANCED       -> unlocks self-service CMS access (projects, media, captions).
+// Staff users (role ADMIN) always have full CMS access regardless of tier.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Tier {
+  FREE
+  STANDARD
+  ADVANCED
+}
+
+enum Role {
+  ADMIN
+  CLIENT
+}
+
+enum ProjectStatus {
+  DRAFT
+  IN_PROGRESS
+  REVIEW
+  DELIVERED
+  ARCHIVED
+}
+
+enum CaptionFormat {
+  SRT
+  VTT
+  SCC
+  TXT
+}
+
+model Client {
+  id                   String   @id @default(cuid())
+  name                 String
+  tier                 Tier     @default(FREE)
+  stripeCustomerId     String?  @unique
+  stripeSubscriptionId String?  @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  users    User[]
+  projects Project[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(CLIENT)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  client   Client? @relation(fields: [clientId], references: [id])
+  clientId String?
+}
+
+model Project {
+  id        String        @id @default(cuid())
+  title     String
+  status    ProjectStatus @default(DRAFT)
+  notes     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  client   Client @relation(fields: [clientId], references: [id])
+  clientId String
+
+  media          MediaAsset[]
+  captionTracks  CaptionTrack[]
+}
+
+model MediaAsset {
+  id         String   @id @default(cuid())
+  filename   String
+  url        String
+  mimeType   String
+  sizeBytes  Int
+  createdAt  DateTime @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+}
+
+model CaptionTrack {
+  id         String        @id @default(cuid())
+  language   String
+  format     CaptionFormat
+  fileUrl    String
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+}
+
+// Marketing site content (pages/posts), managed by staff only.
+model Page {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  body        String
+  published   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

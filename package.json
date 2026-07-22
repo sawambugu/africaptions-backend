@@ -1,21 +1,37 @@
 {
   "name": "africaptions-backend",
   "version": "1.0.0",
-  "description": "Contact form API for the Africaptions Media House website",
+  "description": "Africaptions Media House backend: contact form API plus the CMS (auth, billing, and Tier 2/Advanced-gated content management)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "postinstall": "prisma generate",
+    "test": "jest --runInBand"
   },
   "dependencies": {
+    "@prisma/client": "^5.19.1",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.2.0",
-    "nodemailer": "^9.0.3"
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
+    "prisma": "^5.19.1",
+    "stripe": "^16.12.0"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-s3": "^3.658.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.0",
+    "supertest": "^7.0.0"
   }
 }
