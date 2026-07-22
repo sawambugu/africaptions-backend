@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Confirming payment — Africaptions</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <h2>Confirming your Paystack payment…</h2>
+      <p class="status" id="status">Please wait, this can take a few seconds.</p>
+      <p><a href="/dashboard/">Back to dashboard</a></p>
+    </section>
+  </main>
+  <script>
+    const TOKEN_KEY = 'ap_token';
+    const statusEl = document.getElementById('status');
+    const params = new URLSearchParams(window.location.search);
+    const reference = params.get('reference') || params.get('trxref');
+
+    async function poll(attempt = 0) {
+      if (!reference) {
+        statusEl.textContent = 'No payment reference found in the URL.';
+        return;
+      }
+      if (attempt > 20) {
+        statusEl.textContent = 'Still confirming — check the dashboard shortly.';
+        return;
+      }
+      try {
+        const token = localStorage.getItem(TOKEN_KEY);
+        const res = await fetch(`/api/billing/status/${reference}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const data = await res.json();
+        if (data.status === 'SUCCESS') {
+          statusEl.textContent = 'Payment received! Your account is now Advanced. Redirecting…';
+          setTimeout(() => window.location.href = '/dashboard/', 1500);
+          return;
+        }
+        if (data.status === 'FAILED') {
+          statusEl.textContent = 'Payment was not completed. You can try again from the dashboard.';
+          return;
+        }
+      } catch (err) {
+        // fall through to retry
+      }
+      setTimeout(() => poll(attempt + 1), 3000);
+    }
+
+    poll();
+  </script>
+</body>
+</html>

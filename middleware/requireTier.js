@@ -1,0 +1,53 @@
+// Gates a route behind a minimum subscription tier. This is the actual
+// "pay more to unlock the CMS" check: staff (role ADMIN) always pass,
+// everyone else needs their Client account's tier to be at or above the
+// tier required for the route. Must run after `authenticate`.
+
+const prisma = require('../lib/prisma');
+
+const TIER_RANK = { FREE: 0, STANDARD: 1, ADVANCED: 2 };
+
+module.exports = function requireTier(minTier) {
+  const minRank = TIER_RANK[minTier];
+  if (minRank === undefined) {
+    throw new Error(`requireTier: unknown tier "${minTier}"`);
+  }
+
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    if (req.user.role === 'ADMIN') {
+      return next();
+    }
+    if (!req.user.clientId) {
+      return res.status(403).json({
+        error: `This feature requires the ${minTier} plan. Upgrade your account to continue.`,
+      });
+    }
+
+    let client = await prisma.client.findUnique({ where: { id: req.user.clientId } });
+
+    // Lazily enforce plan expiry: a paid tier (set by a successful Paystack
+    // or M-Pesa payment) lapses after tierExpiresAt. There's no recurring
+    // billing on mobile money, so instead of a cron job we just check (and
+    // self-heal) on the next request after expiry.
+    if (client && client.tierExpiresAt && client.tierExpiresAt < new Date() && client.tier !== 'FREE') {
+      client = await prisma.client.update({
+        where: { id: client.id },
+        data: { tier: 'FREE', tierExpiresAt: null },
+      });
+    }
+
+    if (!client || TIER_RANK[client.tier] < minRank) {
+      return res.status(403).json({
+        error: `This feature requires the ${minTier} plan. Upgrade your account to continue.`,
+        currentTier: client ? client.tier : null,
+        requiredTier: minTier,
+      });
+    }
+
+    req.client = client;
+    next();
+  };
+};
